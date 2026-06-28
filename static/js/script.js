@@ -144,33 +144,139 @@ function buildItemGrid(containerId, ids, emptyMsg){
 }
 
 /* ======================================================
-   CRIAR LISTA DE HABILIDADES (texto simples — sem PNG)
+   CRIAR LISTA DE HABILIDADES (nome + personagem)
    ====================================================== */
+const SKILL_CATALOG = Object.freeze({
+  "1":  {name:"Toque de Cura",              character:"Olivia"},
+  "2":  {name:"Corrida",                    character:"Kelly"},
+  "3":  {name:"Vontade de Ferro",           character:"Ford"},
+  "4":  {name:"Especialista de Armadura",   character:"Andrew"},
+  "5":  {name:"Especialista em Arma de Fogo",character:"Nikita"},
+  "6":  {name:"Pós-Combustão",              character:"Misha"},
+  "7":  {name:"Glutonaria",                  character:"Maxim"},
+  "8":  {name:"Muay Thai",                   character:"Kla"},
+  "9":  {name:"Estilhaço Fatal",             character:"Paloma"},
+  "10": {name:"Energia da Vila",             character:"Miguel"},
+  "11": {name:"Agilidade",                   character:"Caroline"},
+  "12": {name:"Camuflagem",                  character:"Wukong"},
+  "13": {name:"Espírito Gângster",           character:"Antonio"},
+  "14": {name:"Olho Hacker",                 character:"Moco"},
+  "15": {name:"Bushido",                     character:"Hayato"},
+  "17": {name:"Tiro Certeiro",               character:"Laura"},
+  "18": {name:"Morte Silenciosa",            character:"Rafael"},
+  "19": {name:"Emoção da Batalha",           character:"A124"},
+  "20": {name:"Mimadinho",                   character:"Joseph"},
+  "21": {name:"Reciclagem de Armadura",      character:"Shani"},
+  "22": {name:"Som na Caixa",                character:"Alok"},
+  "23": {name:"Arte da Demolição",           character:"Alvaro"},
+  "24": {name:"Cura Veloz",                  character:"Notora"},
+  "25": {name:"Velocidade Mortal",           character:"Kelly Despertada"},
+  "26": {name:"Abrigo de Tinta",             character:"Steffie"},
+  "27": {name:"Ataque Seguro",               character:"Jota"},
+  "28": {name:"Canção de Cura",              character:"Kapella"},
+  "29": {name:"Goleada",                     character:"Luqueta"},
+  "30": {name:"Centro das Atenções",         character:"Wolfrahh"},
+  "31": {name:"Entregando o Ouro",           character:"Clu"},
+  "32": {name:"Arte das Lâminas",            character:"Hayato Despertado"},
+  "33": {name:"Recarga Furiosa",             character:"Jai"},
+  "34": {name:"Lição do Professor",          character:"K"},
+  "35": {name:"Baladeira",                   character:"Dasha"},
+  "38": {name:"Escudo Tunado",               character:"Chrono"},
+  "40": {name:"Quebradeira",                 character:"Skyler"},
+  "41": {name:"Delivery de Dano",            character:"Shirou"},
+  "42": {name:"Alcateia",                    character:"Andrew Despertado"},
+  "43": {name:"Ferida do Falcão",            character:"Maro"},
+  "44": {name:"Dano Radical",                character:"Xayne"},
+  "45": {name:"Pé de Break",                 character:"D-Bee"},
+  "46": {name:"Levantando na Batida",        character:"Thiva"},
+  "47": {name:"Batida da Cura",              character:"Dimitri"},
+  "48": {name:"Olho da Enigma",              character:"Moco Despertada"},
+  "49": {name:"Lance Livre",                 character:"Leon"},
+  "50": {name:"Olhar de Calavera",           character:"Otho"},
+  "52": {name:"Gel de Aço",                  character:"Nairi"},
+  "53": {name:"Capa e Tchau",                character:"Luna"},
+  "54": {name:"Proteção do Samurai",         character:"Kenta"},
+  "55": {name:"Olho de Argos",               character:"Homer"},
+  "56": {name:"Rastreadora",                 character:"Iris"},
+  "57": {name:"Silêncio Noturno",            character:"J.Biebs"},
+  "58": {name:"Disparo Rebelde",             character:"Tatsuya"},
+  "60": {name:"Manequim de Transporte",      character:"Santino"},
+  "62": {name:"Onda Escarlate",              character:"Orion"},
+  "63": {name:"Arte da Demolição",           character:"Alvaro Despertado"},
+  "65": {name:"Nanoproteção",                character:"Sonia"},
+  "66": {name:"Abate é Dinheiro",            character:"Suzy"},
+  "67": {name:"Paredão de Fogo",             character:"Ignis"},
+  "68": {name:"Na Teia da Aranha",           character:"Ryden"},
+  "69": {name:"Quebra de Defesa",            character:"Kairos"},
+  "70": {name:"Eletroterapia",               character:"Kassie"},
+  "71": {name:"Golpe Con-GEL-ante",          character:"Lila"},
+  "72": {name:"Visão Boreal",                character:"Koda"},
+  "74": {name:"Impacto Insano",              character:"Oscar"},
+  "75": {name:"Rajada de Kunai",             character:"Rin"},
+  "76": {name:"Modo Furtivo",                character:"Morse"},
+  "77": {name:"Mente Gélida",                character:"Nero"},
+  "78": {name:"Vínculo do Eclipse",          character:"Ray"}
+});
+
+function normalizeEquippedSkills(skills){
+  const arr=Array.isArray(skills)?skills:[];
+  const objects=arr.filter(s=>typeof s==='object'&&s!==null);
+
+  // Também aceita o formato enriquecido: {id, name, character, ...}.
+  if(objects.length){
+    return objects.map(s=>({
+      id:s.skillId||s.skill_id||s.id||null,
+      name:s.name||s.skillName||s.skill_name||null,
+      character:s.character||s.characterName||s.character_name||null
+    })).filter(s=>s.id||s.name||s.character);
+  }
+
+  const values=arr.map(Number).filter(Number.isFinite);
+  const compact=[];
+  for(let i=0;i<values.length-1;i++){
+    // O protobuf atual chega compactado como [16, skillId, origem, slot, ...].
+    if(values[i]===16&&values[i+1]>0){
+      compact.push({id:values[i+1]});
+      i++;
+    }
+  }
+  if(compact.length) return compact;
+
+  // Compatibilidade com APIs que já retornam somente os IDs.
+  return values.filter(id=>id>=100).map(id=>({id}));
+}
+
+function resolveSkillMeta(skill){
+  if(skill.name&&skill.character){
+    return {name:String(skill.name),character:String(skill.character)};
+  }
+
+  const id=Number(skill.id);
+  if(!Number.isFinite(id)||id<=0) return null;
+
+  // IDs normais usam os dois últimos dígitos para nível/variante.
+  // O Alok despertado possui uma variação histórica com cinco dígitos.
+  const family=id>=22010&&id<=22099?'22':String(Math.trunc(id/100));
+  return SKILL_CATALOG[family]||null;
+}
+
 function buildSkillList(containerId, skills, emptyMsg){
   const c=document.getElementById(containerId);
   c.innerHTML='';
-  const arr=Array.isArray(skills)?skills:[];
-  if(!arr.length){c.innerHTML=`<div class="empty-msg">${emptyMsg}</div>`;return;}
-  arr.forEach((s,i)=>{
+  const normalized=normalizeEquippedSkills(skills);
+  if(!normalized.length){c.innerHTML=`<div class="empty-msg">${emptyMsg}</div>`;return;}
+
+  normalized.forEach(skill=>{
     const item=document.createElement('div');
+    const label=document.createElement('span');
+    const meta=resolveSkillMeta(skill);
     item.className='skill-item';
-    // s pode ser o objeto {skillId, skillLevel} ou um número simples
-    if(typeof s==='object' && s!==null){
-      const sid  = s.skillId   || s.skill_id   || s.id || '—';
-      const slvl = s.skillLevel|| s.skill_level || s.level || '—';
-      item.innerHTML=`
-        <span class="skill-name">Habilidade ${i+1}</span>
-        <span class="skill-id">ID: ${sid}</span>
-        <span class="skill-lvl">Nível: ${slvl}</span>`;
-    } else {
-      item.innerHTML=`
-        <span class="skill-name">Habilidade ${i+1}</span>
-        <span class="skill-id">ID: ${s}</span>`;
-    }
+    label.className='skill-name';
+    label.textContent=meta?meta.name+' ('+meta.character+')':'Habilidade não identificada';
+    item.appendChild(label);
     c.appendChild(item);
   });
 }
-
 /* ======================================================
    RENDERIZAR RESULTADO COMPLETO
    ====================================================== */
