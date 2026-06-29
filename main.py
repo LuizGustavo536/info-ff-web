@@ -37,7 +37,7 @@ MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV  = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
 RELEASEVERSION = "OB54"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-REGION_PRIORITY = ["ME", "BD", "IND", "SG", "ID", "TH", "VN", "PK", "BR", "US", "EU"]
+REGION_PRIORITY = ["BR", "US", "ME", "BD", "IND", "SG", "ID", "TH", "VN", "PK", "EU"]
 SUPPORTED_REGIONS = set(REGION_PRIORITY)
 TOKEN_CACHE_FILE = 'token_cache.pkl'
 IMAGE_BASE_URL = "https://cdn.jsdelivr.net/gh/ShahGCreator/icon@main/PNG/"
@@ -51,7 +51,7 @@ token_manager = None
 class TokenManager:
     def __init__(self):
         self.tokens = {}
-        self.lock = asyncio.Lock()
+        self.lock = threading.RLock()
         self.load_tokens()
 
     def load_tokens(self):
@@ -75,16 +75,24 @@ class TokenManager:
             print(f"❌ Save tokens error: {e}")
 
     async def get_token(self, region: str):
-        async with self.lock:
+        # Protege apenas o cache em memória; chamadas de rede ficam fora do lock.
+        # Isso evita reutilizar um asyncio.Lock entre loops de requisições diferentes.
+        with self.lock:
             info = self.tokens.get(region)
             if info and info.get('expires_at', 0) > time.time():
                 return info
-            new_token = await self.generate_token(region)
-            if new_token:
-                self.tokens[region] = new_token
-                self.save_tokens()
-                return new_token
+
+        new_token = await self.generate_token(region)
+        if not new_token:
             return None
+
+        with self.lock:
+            current = self.tokens.get(region)
+            if current and current.get('expires_at', 0) > time.time():
+                return current
+            self.tokens[region] = new_token
+            self.save_tokens()
+        return new_token
 
     async def generate_token(self, region: str):
         try:
@@ -203,21 +211,45 @@ async def GetAccountInformation(uid, region):
             account_info = AccountPersonalShow_pb2.AccountPersonalShowInfo()
             account_info.ParseFromString(resp.content)
             result = json.loads(json_format.MessageToJson(account_info))
+            if not result.get("basicInfo"):
+                print(f"⚠️ UID {uid} not found via {region}")
+                return None
             print(f"✅ Info received for UID {uid} from {region}")
             return result
     except Exception as e:
         print(f"❌ GetAccountInformation error: {e}")
         return None
 
+def build_image_url(item_id):
+    if item_id in (None, "", 0, "0"):
+        return None
+    return f"{IMAGE_BASE_URL}{item_id}.png"
+
+
+def build_image_items(item_ids):
+    if not isinstance(item_ids, list):
+        return []
+    return [
+        {"id": str(item_id), "image": build_image_url(item_id)}
+        for item_id in item_ids
+        if item_id not in (None, "", 0, "0")
+    ]
+
+
 def format_response(data):
     if not data:
         return {"error": "No data"}
-    basic  = data.get("basicInfo", {})
-    clan   = data.get("clanBasicInfo", {})
-    social = data.get("socialInfo", {})
+    basic   = data.get("basicInfo", {})
+    profile = data.get("profileInfo", {})
+    clan    = data.get("clanBasicInfo", {})
+    social  = data.get("socialInfo", {})
+    avatar_id = basic.get("headPic", "0")
+    weapons = basic.get("weaponSkinShows", [])
+    outfits = profile.get("clothes", [])
     return {
         "AccountInfo": {
-            "AccountAvatarId":   str(basic.get("headPic", "0")),
+            "AccountAvatarId":   str(avatar_id),
+            "AccountAvatarImage": build_image_url(avatar_id),
             "AccountBPBadges":   str(basic.get("badgeCnt", "0")),
             "AccountBPID":       str(basic.get("badgeId", "0")),
             "AccountBannerId":   str(basic.get("bannerId", "0")),
@@ -234,15 +266,17 @@ def format_response(data):
             "BrRankPoint":       str(basic.get("rankingPoints", "0")),
             "CsMaxRank":         str(basic.get("csMaxRank", "0")),
             "CsRankPoint":       str(basic.get("csRankingPoints", "0")),
-            "EquippedWeapon":    basic.get("weaponSkinShows", []),
+            "EquippedWeapon":    weapons,
+            "EquippedWeaponImages": build_image_items(weapons),
             "ReleaseVersion":    basic.get("releaseVersion", RELEASEVERSION),
             "ShowBrRank":        str(basic.get("showBrRank", "0")),
             "ShowCsRank":        str(basic.get("showCsRank", "0")),
             "Title":             str(basic.get("title", "0"))
         },
         "AccountProfileInfo": {
-            "EquippedOutfit": data.get("profileInfo", {}).get("clothes", []),
-            "EquippedSkills": data.get("profileInfo", {}).get("equipedSkills", [])
+            "EquippedOutfit": outfits,
+            "EquippedOutfitImages": build_image_items(outfits),
+            "EquippedSkills": profile.get("equipedSkills", [])
         },
         "GuildInfo": {
             "GuildCapacity": str(clan.get("capacity", "0")),
@@ -266,40 +300,77 @@ def format_response(data):
 def home():
     return render_template('index.html')
 
+async def find_account_across_regions(uid, regions, overall_timeout):
+    """Procura o UID em paralelo, com concorrência e tempo total limitados."""
+    semaphore = asyncio.Semaphore(4)
+    timed_out = False
+
+    async def attempt(region):
+        async with semaphore:
+            try:
+                data = await asyncio.wait_for(
+                    GetAccountInformation(uid, region),
+                    timeout=12.0
+                )
+                return region, data
+            except asyncio.TimeoutError:
+                print(f"⏱️ Region {region} timed out")
+                return region, None
+
+    tasks = [asyncio.create_task(attempt(region)) for region in regions]
+    try:
+        for completed in asyncio.as_completed(tasks, timeout=overall_timeout):
+            region, data = await completed
+            if data:
+                return data, region, False
+    except asyncio.TimeoutError:
+        timed_out = True
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    return None, None, timed_out
+
+
 @app.route('/get')
 def get_account_info():
     uid = request.args.get('uid')
     region_param = request.args.get('region', '').upper()
     if not uid:
-        return jsonify({"error": "UID required"}), 400
+        return jsonify({"error": "UID obrigatório"}), 400
+    if region_param and region_param not in SUPPORTED_REGIONS:
+        return jsonify({"error": "Região inválida"}), 400
 
-    print(f"\n🔍 Processing info for UID: {uid}")
-    print(f"🎯 Region priority: ME -> BD -> IND -> Others")
+    regions_to_try = [region_param] if region_param else REGION_PRIORITY
+    overall_timeout = 15.0 if region_param else 25.0
+    mode = region_param or "AUTOMÁTICA"
+    print(f"\n🔍 Processing UID {uid} in mode {mode}")
 
-    regions_to_try = ([region_param] + [r for r in REGION_PRIORITY if r != region_param]
-                      if region_param in SUPPORTED_REGIONS else REGION_PRIORITY)
+    try:
+        data, resolved_region, timed_out = asyncio.run(
+            find_account_across_regions(uid, regions_to_try, overall_timeout)
+        )
+    except Exception as exc:
+        print(f"❌ Search error: {exc}")
+        return jsonify({"error": "Falha ao consultar o jogador"}), 500
 
-    for region in regions_to_try:
-        if region not in token_manager.tokens:
-            print(f"⚠️ No token for {region}, skipping...")
-            continue
-        print(f"🌍 Trying {region}...")
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            data = loop.run_until_complete(GetAccountInformation(uid, region))
-            loop.close()
-            if data:
-                print(f"✅ Success with {region}")
-                return jsonify(format_response(data))
-            else:
-                print(f"⚠️ No data from {region}")
-        except Exception as e:
-            print(f"❌ {region} error: {e}")
-            continue
+    if data:
+        response = format_response(data)
+        response["SearchInfo"] = {
+            "RequestedRegion": region_param or "AUTO",
+            "ResolvedRegion": resolved_region
+        }
+        return jsonify(response)
 
-    print("\n❌ All regions failed")
-    return jsonify({"error": "Player not found"}), 404
+    if timed_out:
+        return jsonify({
+            "error": "A busca demorou demais. Tente novamente ou selecione uma região específica."
+        }), 504
+
+    return jsonify({"error": "Jogador não encontrado nas regiões consultadas"}), 404
+
 
 @app.route('/status')
 def token_status():

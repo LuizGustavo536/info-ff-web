@@ -365,19 +365,30 @@ async function searchPlayer(){
   hideError();
   document.getElementById('resultSection').style.display='none';
 
+  const controller=new AbortController();
+  const timeoutMs=region?20000:32000;
+  const timeoutId=window.setTimeout(()=>controller.abort(),timeoutMs);
+
   try{
     let url=`/get?uid=${encodeURIComponent(uid)}`;
     if(region) url+=`&region=${encodeURIComponent(region)}`;
-    const res  = await fetch(url);
-    const data = await res.json();
+    const res=await fetch(url,{signal:controller.signal});
+    const data=await res.json();
     if(!res.ok||data.error){showError(data.error||'Jogador não encontrado');return;}
     renderResult(data);
     document.getElementById('resultSection').style.display='block';
     document.getElementById('resultSection').scrollIntoView({behavior:'smooth',block:'start'});
   }catch(err){
-    showError('Erro de rede');
-    console.error(err);
-  }finally{setLoading(false);}
+    if(err.name==='AbortError'){
+      showError('A busca demorou demais. Tente novamente ou selecione uma região específica.');
+    }else{
+      showError('Erro de rede');
+      console.error(err);
+    }
+  }finally{
+    window.clearTimeout(timeoutId);
+    setLoading(false);
+  }
 }
 
 function setLoading(on){
