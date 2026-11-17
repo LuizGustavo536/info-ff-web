@@ -5,6 +5,14 @@ import json
 import os
 import sys
 import threading
+import zlib
+
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 from collections import defaultdict
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
@@ -35,8 +43,8 @@ except ImportError:
 # === Settings ===
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV  = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
-RELEASEVERSION = "OB54"
-USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
+RELEASEVERSION = "OB55"
+USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)"
 REGION_PRIORITY = ["BR", "US", "ME", "BD", "IND", "SG", "ID", "TH", "VN", "PK", "EU"]
 SUPPORTED_REGIONS = set(REGION_PRIORITY)
 TOKEN_CACHE_FILE = 'token_cache.pkl'
@@ -47,17 +55,57 @@ CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 token_manager = None
 
+# === Pool de Contas (BR / US via uidpass.json) ===
+UIDPASS_PATH = os.path.join(current_dir, 'uidpass.json')
+account_pool_br = []
+pool_cursor = 0
+pool_lock = threading.Lock()
+
+if os.path.exists(UIDPASS_PATH):
+    try:
+        with open(UIDPASS_PATH, 'r', encoding='utf-8') as f:
+            account_pool_br = json.load(f)
+    except Exception as e:
+        print(f"[WARN] Erro ao carregar uidpass.json: {e}")
+
+if not account_pool_br:
+    account_pool_br = [
+        {"uid": "5437930135", "password": "BR_TG_@VISWAJEETHU_AikwF46W"},
+        {"uid": "5438234260", "password": "BR_TG_@VISWAJEETHU_AikwF46W"},
+    ]
+
+def get_next_br_account():
+    global pool_cursor
+    with pool_lock:
+        acc = account_pool_br[pool_cursor % len(account_pool_br)]
+        pool_cursor = (pool_cursor + 1) % len(account_pool_br)
+        return acc['uid'], acc['password']
+
+def get_account_credentials(region: str) -> tuple:
+    r = region.upper()
+    if r in {"BR", "US", "SAC", "NA"}:
+        return get_next_br_account()
+    elif r == "IND":
+        return "4363983977", "ISHITA_0AFN5_BY_SPIDEERIO_GAMING_UY12H"
+    elif r == "ME":
+        return "4269012488", "MG24_GAMER_U27YB_BY_SPIDEERIO_GAMING_0PNCN"
+    elif r == "BD":
+        return "4270778393", "MG24_GAMER_9NMYG_BY_SPIDEERIO_GAMING_FXK8R"
+    else:
+        return "4418979127", "RIZER_K4CY1_RIZER_WNX02"
+
 # === Token Manager ===
 class TokenManager:
-    def __init__(self):
+    def __init__(self, cache_file=TOKEN_CACHE_FILE):
         self.tokens = {}
         self.lock = threading.RLock()
+        self.cache_file = cache_file
         self.load_tokens()
 
     def load_tokens(self):
         try:
-            if os.path.exists(TOKEN_CACHE_FILE):
-                with open(TOKEN_CACHE_FILE, 'rb') as f:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'rb') as f:
                     saved = pickle.load(f)
                     now = time.time()
                     for r, info in saved.items():
@@ -69,17 +117,15 @@ class TokenManager:
 
     def save_tokens(self):
         try:
-            with open(TOKEN_CACHE_FILE, 'wb') as f:
+            with open(self.cache_file, 'wb') as f:
                 pickle.dump(dict(self.tokens), f)
         except Exception as e:
             print(f"❌ Save tokens error: {e}")
 
-    async def get_token(self, region: str):
-        # Protege apenas o cache em memória; chamadas de rede ficam fora do lock.
-        # Isso evita reutilizar um asyncio.Lock entre loops de requisições diferentes.
+    async def get_token(self, region: str, force_refresh: bool = False):
         with self.lock:
             info = self.tokens.get(region)
-            if info and info.get('expires_at', 0) > time.time():
+            if not force_refresh and info and info.get('expires_at', 0) > time.time() + 60:
                 return info
 
         new_token = await self.generate_token(region)
@@ -87,52 +133,66 @@ class TokenManager:
             return None
 
         with self.lock:
-            current = self.tokens.get(region)
-            if current and current.get('expires_at', 0) > time.time():
-                return current
             self.tokens[region] = new_token
             self.save_tokens()
         return new_token
 
     async def generate_token(self, region: str):
+        uid, password = get_account_credentials(region)
+        headers = {"User-Agent": USERAGENT, "Accept": "application/json"}
+
+        # 1. ShardWeb Token API
         try:
-            account = get_account_credentials(region)
-            token_val, open_id = await get_access_token(account)
-            if not token_val or not open_id:
-                return None
-            body = json.dumps({"open_id": open_id, "open_id_type": "4",
-                               "login_token": token_val, "orign_platform_type": "4"})
-            proto_bytes = await json_to_proto(body, FreeFire_pb2.LoginReq())
-            payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, proto_bytes)
-            url = "https://loginbp.ggblueshark.com/MajorLogin"
-            headers = {
-                'User-Agent': USERAGENT, 'Connection': "Keep-Alive",
-                'Accept-Encoding': "gzip", 'Content-Type': "application/octet-stream",
-                'Expect': "100-continue", 'X-Unity-Version': "2018.4.11f1",
-                'X-GA': "v1 1", 'ReleaseVersion': RELEASEVERSION
-            }
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, data=payload, headers=headers)
-                if resp.status_code != 200:
-                    print(f"❌ MajorLogin {resp.status_code} for {region}")
-                    return None
-                login_res = FreeFire_pb2.LoginRes()
-                login_res.ParseFromString(resp.content)
-                msg = json.loads(json_format.MessageToJson(login_res))
-                token_info = {
-                    'token': f"Bearer {msg.get('token','0')}",
-                    'region': msg.get('lockRegion','0'),
-                    'server_url': msg.get('serverUrl','0'),
-                    'expires_at': time.time() + 25200
-                }
-                print(f"✅ Token generated: {region}")
-                return token_info
+            token_url = f"https://tokenapi.shardweb.app/token?uid={uid}&password={password}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(token_url, headers=headers)
+                if resp.status_code == 200:
+                    msg = resp.json()
+                    tok = msg.get('token')
+                    if tok and len(str(tok).split('.')) == 3:
+                        server_url = msg.get('serverUrl') or msg.get('server_url') or (
+                            'https://client.ind.freefiremobile.com' if region == 'IND' else 'https://client.us.freefiremobile.com'
+                        )
+                        token_info = {
+                            'token': f"Bearer {tok}",
+                            'region': msg.get('region') or region,
+                            'server_url': server_url,
+                            'expires_at': msg.get('expiry_time', time.time() + 25200)
+                        }
+                        print(f"✅ Token generated via ShardWeb: {region}")
+                        return token_info
         except Exception as e:
-            print(f"❌ generate_token error [{region}]: {e}")
-            return None
+            print(f"⚠️ ShardWeb token attempt error [{region}]: {e}")
+
+        # 2. Flash-Token API Fallback
+        try:
+            _z = base64.b64decode("aHR0cHM6Ly9mbGFzaC10b2tlbi12Mi52ZXJjZWwuYXBwL3Rva2Vu").decode()
+            _y = base64.b64decode("Rmxhc2g=").decode()
+            url = f"{_z}?uid={uid}&password={password}&key={_y}"
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    msg = resp.json()
+                    tok = msg.get('token')
+                    if tok and len(str(tok).split('.')) == 3:
+                        server_url = msg.get('serverUrl') or (
+                            'https://client.ind.freefiremobile.com' if region == 'IND' else 'https://client.us.freefiremobile.com'
+                        )
+                        token_info = {
+                            'token': f"Bearer {tok}",
+                            'region': msg.get('lockRegion') or msg.get('region') or region,
+                            'server_url': server_url,
+                            'expires_at': msg.get('expiry_time', time.time() + 25200)
+                        }
+                        print(f"✅ Token generated via Flash-Token: {region}")
+                        return token_info
+        except Exception as e:
+            print(f"⚠️ Flash-Token error [{region}]: {e}")
+
+        return None
 
     async def refresh_all_tokens(self):
-        tasks = [self.get_token(r) for r in REGION_PRIORITY]
+        tasks = [self.get_token(r, force_refresh=True) for r in REGION_PRIORITY]
         await asyncio.gather(*tasks)
         self.save_tokens()
 
@@ -150,81 +210,73 @@ def pad(text: bytes) -> bytes:
 def aes_cbc_encrypt(key, iv, plaintext):
     return AES.new(key, AES.MODE_CBC, iv).encrypt(pad(plaintext))
 
-async def json_to_proto(json_data, proto_message):
-    json_format.ParseDict(json.loads(json_data), proto_message)
-    return proto_message.SerializeToString()
+async def GetAccountInformation(uid, region, endpoint="/GetPlayerPersonalShow", max_retries=3):
+    req = main_pb2.GetPlayerPersonalShow()
+    req.a = int(uid)
+    req.b = 1  # garena = 1 (OB55)
+    data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, req.SerializeToString())
 
-def get_account_credentials(region: str) -> str:
-    r = region.upper()
-    if r == "ME":
-        return "uid=4269012488&password=MG24_GAMER_U27YB_BY_SPIDEERIO_GAMING_0PNCN"
-    elif r == "BD":
-        return "uid=4270778393&password=MG24_GAMER_9NMYG_BY_SPIDEERIO_GAMING_FXK8R"
-    elif r == "IND":
-        return "uid=4269013803&password=MG24_GAMER_XSBOS_BY_SPIDEERIO_GAMING_TE5NG"
-    elif r in {"BR", "US", "SAC"}:
-        return "uid=4491519165&password=N2VHPS4U0W7ZNE1L0ODDCO91JENDYB2NS13QTZFY3HEYGBSMYHN1UL57NM6WIFJV"
-    else:
-        return "uid=4269012488&password=MG24_GAMER_U27YB_BY_SPIDEERIO_GAMING_0PNCN"
-
-async def get_access_token(account: str):
-    url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
-    payload = account + "&response_type=token&client_type=2&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3&client_id=100067"
-    headers = {'User-Agent': USERAGENT, 'Content-Type': "application/x-www-form-urlencoded"}
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, data=payload, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data.get("access_token"), data.get("open_id")
-                else:
-                    print(f"⚠️ Token API attempt {attempt+1}: {resp.status_code}")
-                    await asyncio.sleep(2)
-        except Exception as e:
-            print(f"⚠️ Token API error attempt {attempt+1}: {e}")
-            await asyncio.sleep(2)
-    return None, None
-
-async def GetAccountInformation(uid, region):
-    try:
-        token_info = await token_manager.get_token(region)
+    for attempt in range(max_retries):
+        force_new = (attempt > 0)
+        token_info = await token_manager.get_token(region, force_refresh=force_new)
         if not token_info:
-            return None
+            continue
         token = token_info['token']
         server_url = token_info['server_url']
-        payload = await json_to_proto(json.dumps({'a': uid, 'b': '7'}), main_pb2.GetPlayerPersonalShow())
-        data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, payload)
+
         headers = {
-            'User-Agent': USERAGENT, 'Connection': "Keep-Alive",
-            'Accept-Encoding': "gzip", 'Content-Type': "application/octet-stream",
-            'Expect': "100-continue", 'Authorization': token,
-            'X-Unity-Version': "2018.4.11f1", 'X-GA': "v1 1",
-            'ReleaseVersion': RELEASEVERSION
+            'User-Agent': USERAGENT,
+            'Connection': "Keep-Alive",
+            'Accept': "*/*",
+            'Accept-Encoding': "gzip",
+            'Expect': "100-continue",
+            'Authorization': token,
+            'X-Unity-Version': "2018.4.12f1",
+            'X-GA': "v1 1",
+            'X-GA-SV': "1789638359",
+            'ReleaseVersion': RELEASEVERSION,
+            'Content-Type': "application/x-www-form-urlencoded"
         }
-        print(f"📡 Requesting info for UID {uid} via {region}...")
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(server_url + '/GetPlayerPersonalShow', data=data_enc, headers=headers)
-            if resp.status_code != 200:
-                print(f"❌ API {resp.status_code} for {region}")
-                return None
-            account_info = AccountPersonalShow_pb2.AccountPersonalShowInfo()
-            account_info.ParseFromString(resp.content)
-            result = json.loads(json_format.MessageToJson(account_info))
-            if not result.get("basicInfo"):
-                print(f"⚠️ UID {uid} not found via {region}")
-                return None
-            print(f"✅ Info received for UID {uid} from {region}")
-            return result
-    except Exception as e:
-        print(f"❌ GetAccountInformation error: {e}")
-        return None
+
+        try:
+            print(f"📡 Requesting info for UID {uid} via {region} (attempt {attempt+1})...")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(server_url + endpoint, data=data_enc, headers=headers)
+                
+                # Se der 401 ou 429, descarta o token e rotaciona para o próximo do pool
+                if resp.status_code in {401, 429}:
+                    print(f"⚠️ Rate limit / auth {resp.status_code} for {region}, rotating account...")
+                    with token_manager.lock:
+                        token_manager.tokens.pop(region, None)
+                    continue
+
+                if resp.status_code != 200:
+                    print(f"❌ API {resp.status_code} for {region}")
+                    return None
+
+                body = resp.content
+                # Descompressão automática de Gzip (essencial no OB55)
+                if resp.headers.get('content-encoding') == 'gzip' or (len(body) > 2 and body[0] == 0x1f and body[1] == 0x8b):
+                    body = zlib.decompress(body, 16 + zlib.MAX_WBITS)
+
+                account_info = AccountPersonalShow_pb2.AccountPersonalShowInfo()
+                account_info.ParseFromString(body)
+                result = json.loads(json_format.MessageToJson(account_info))
+                if not result.get("basicInfo"):
+                    print(f"⚠️ UID {uid} not found via {region}")
+                    return None
+                print(f"✅ Info received for UID {uid} from {region}")
+                return result
+        except Exception as e:
+            print(f"❌ GetAccountInformation error attempt {attempt+1}: {e}")
+            continue
+
+    return None
 
 def build_image_url(item_id):
     if item_id in (None, "", 0, "0"):
         return None
     return f"{IMAGE_BASE_URL}{item_id}.png"
-
 
 def build_image_items(item_ids):
     if not isinstance(item_ids, list):
@@ -234,7 +286,6 @@ def build_image_items(item_ids):
         for item_id in item_ids
         if item_id not in (None, "", 0, "0")
     ]
-
 
 def format_response(data):
     if not data:
@@ -333,7 +384,6 @@ async def find_account_across_regions(uid, regions, overall_timeout):
 
     return None, None, timed_out
 
-
 @app.route('/get')
 def get_account_info():
     uid = request.args.get('uid')
@@ -371,11 +421,12 @@ def get_account_info():
 
     return jsonify({"error": "Jogador não encontrado nas regiões consultadas"}), 404
 
-
 @app.route('/status')
 def token_status():
     status = {}
-    for region, info in token_manager.tokens.items():
+    with token_manager.lock:
+        tokens_copy = dict(token_manager.tokens)
+    for region, info in tokens_copy.items():
         expires_in = info['expires_at'] - time.time()
         status[region] = {
             "has_token": True,
@@ -384,7 +435,7 @@ def token_status():
         }
     return jsonify({
         "region_priority": REGION_PRIORITY,
-        "total_tokens": len(token_manager.tokens),
+        "total_tokens": len(tokens_copy),
         "tokens": status
     })
 
@@ -417,48 +468,37 @@ def start_background_tasks():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    print("🎯 Generating priority tokens: ME -> BD -> IND")
-    for region in ["ME", "IND", "BD"]:
+    print("🎯 Initializing primary tokens: BR -> US -> IND -> BD")
+    for region in ["BR", "US", "IND", "BD"]:
         try:
             loop.run_until_complete(token_manager.get_token(region))
         except Exception as e:
             print(f"⚠️ {region}: {e}")
 
-    other = [r for r in REGION_PRIORITY if r not in ["ME", "BD", "IND"]]
-    for region in other:
-        try:
-            loop.run_until_complete(token_manager.get_token(region))
-        except Exception as e:
-            print(f"⚠️ {region}: {e}")
-
-    loop.run_forever()
+    loop.run_until_complete(token_manager.auto_refresh_loop())
 
 if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
     print("="*55)
-    print("🚀 KAWSARxFFINFO - Free Fire Info Website")
+    print("🚀 LUIZxFFINFO - Free Fire Player Info Website (OB55)")
     print("="*55)
     print(f"🎯 Region Priority: {' -> '.join(REGION_PRIORITY[:3])} -> Others")
 
     bg = threading.Thread(target=start_background_tasks, daemon=True)
     bg.start()
 
-    print("⏳ Initializing tokens (ME, BD, IND)...")
-    time.sleep(10)
-
-    if token_manager:
-        print(f"✅ Tokens cached: {len(token_manager.tokens)}")
-        for region in REGION_PRIORITY:
-            mark = "✓" if region in token_manager.tokens else "✗"
-            print(f"  {mark} {region}")
+    print("⏳ Initializing tokens...")
+    time.sleep(3)
 
     print("="*55)
-    print("🚀 API running on port 5000")
+    print(f"🚀 API running on port {port}")
     print("📝 Endpoints:")
+    print("   /                   - Website UI")
     print("   /get?uid=UID        - Get player info")
-    print("   /get?uid=UID&region=BD - Specific region")
+    print("   /get?uid=UID&region=BR - Specific region")
     print("   /status             - Token status")
     print("   /refresh            - Force refresh")
     print("   /test/REGION        - Test region")
     print("="*55)
 
-    app.run(host='0.0.0.0', port=55100, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)

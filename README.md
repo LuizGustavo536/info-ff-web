@@ -1,97 +1,88 @@
-# ⚡ KAWSARxFFINFO — Free Fire Player Info Website
+# ⚡ LUIZxFFINFO — Site de Informações do Free Fire (OB55)
 
-একটি সুন্দর, দ্রুত এবং সম্পূর্ণ Free Fire প্লেয়ার তথ্য ওয়েবসাইট।
+Um site moderno, rápido e completo para consulta de perfis e estatísticas de jogadores de Free Fire, atualizado e compatível com a versão **OB55**.
 
 ---
 
-## 📁 ফাইল স্ট্রাকচার
+## 📁 Estrutura de Arquivos
 
 ```
-kawsarxffinfo/
-├── server.py              ← মেইন Flask সার্ভার (Python)
-├── requirements.txt       ← Python dependencies
-├── proto/                 ← Protobuf ফাইল (পরিবর্তন করবেন না)
-│   ├── FreeFire_pb2.py
+Site-info/
+├── main.py                     ← Servidor Flask principal (Python)
+├── api/
+│   └── index.py                ← Entrada serverless para deploy na Vercel
+├── vercel.json                 ← Configuração de rotas da Vercel
+├── requirements.txt            ← Dependências do Python
+├── uidpass.json                ← Pool de contas para rotação e geração de tokens
+├── proto/                      ← Arquivos Protobuf compilados (OB55)
+│   ├── AccountPersonalShow_pb2.py
 │   ├── main_pb2.py
-│   └── AccountPersonalShow_pb2.py
+│   └── FreeFire_pb2.py
 ├── templates/
-│   └── index.html         ← মেইন ওয়েবপেজ (HTML)
+│   └── index.html              ← Página web principal (HTML)
 └── static/
-    ├── css/style.css      ← ডিজাইন
-    └── js/script.js       ← JavaScript লজিক
+    ├── css/style.css           ← Folhas de estilo e temas
+    └── js/script.js            ← Lógica do frontend e catálogo de habilidades
 ```
 
 ---
 
-## ⚙️ সেটআপ / How to Run
+## ⚙️ Instalação e Execução Local
 
-### ১. Python ইনস্টল করুন (3.8+)
+### 1. Requisitos
+- Python 3.8 ou superior instalado.
 
-### ২. Dependencies ইনস্টল করুন:
+### 2. Instalar Dependências:
 ```bash
 pip install -r requirements.txt
 ```
 
-### ৩. Environment Variables সেট করুন:
-
-`server.py` চালানোর আগে আপনার Free Fire অ্যাকাউন্টের credentials
-`FF_CREDS_ME`, `FF_CREDS_BD`, `FF_CREDS_IND` environment variable-এ দিন:
-
-**Windows:**
-```cmd
-set FF_CREDS_ME=uid=YOUR_UID&password=YOUR_PASSWORD
-set FF_CREDS_BD=uid=YOUR_UID&password=YOUR_PASSWORD
-set FF_CREDS_IND=uid=YOUR_UID&password=YOUR_PASSWORD
-```
-
-**Linux/Mac:**
+### 3. Iniciar o Servidor:
 ```bash
-export FF_CREDS_ME="uid=YOUR_UID&password=YOUR_PASSWORD"
-export FF_CREDS_BD="uid=YOUR_UID&password=YOUR_PASSWORD"
+python main.py
 ```
 
-### ৪. সার্ভার চালু করুন:
-```bash
-python server.py
-```
-
-### ৫. ব্রাউজারে খুলুন:
+### 4. Acessar no Navegador:
+Abra seu navegador e acesse:
 ```
 http://localhost:5000
 ```
 
 ---
 
-## 🌐 API Endpoints
+## 🚀 Deploy na Vercel
 
-| Endpoint | বিবরণ |
-|----------|-------|
-| `GET /` | মেইন ওয়েবসাইট |
-| `GET /get?uid=UID` | প্লেয়ার ইনফো |
-| `GET /get?uid=UID&region=BD` | নির্দিষ্ট রিজিয়ন |
-| `GET /status` | টোকেন স্ট্যাটাস |
+O projeto possui suporte nativo a funções Serverless da Vercel:
+1. Conecte o repositório à sua conta na **Vercel**.
+2. O arquivo [`vercel.json`](file:///vercel.json) e [`api/index.py`](file:///api/index.py) já estão pré-configurados.
+3. Clique em **Deploy**.
 
 ---
 
-## 🖼️ কিভাবে PNG দেখায়
+## 🌐 Endpoints da API
 
-- `EquippedOutfit` (পোশাকের ID লিস্ট) → প্রতিটি ID দিয়ে ছবি দেখায়
-- `EquippedWeapon` (অস্ত্রের ID লিস্ট) → প্রতিটি ID দিয়ে ছবি দেখায়
-- `EquippedSkills` (স্কিলের ID লিস্ট) → প্রতিটি ID দিয়ে ছবি দেখায়
-- ছবি সোর্স: `https://cdn.jsdelivr.net/gh/ShahGCreator/icon@main/PNG/{ID}.png`
-
----
-
-## 🚀 Production (Gunicorn)
-
-```bash
-gunicorn -w 2 -b 0.0.0.0:5000 server:app
-```
+| Endpoint | Método | Descrição |
+|----------|--------|-----------|
+| `GET /` | HTTP | Página principal do site com interface interativa |
+| `GET /get?uid={UID}` | HTTP | Consulta informações do jogador com busca automática de região |
+| `GET /get?uid={UID}&region={REGIAO}` | HTTP | Consulta forçando uma região específica (`BR`, `US`, `IND`, `ME`, `BD`, etc.) |
+| `GET /status` | HTTP | Exibe o status e tempo de expiração dos tokens por região |
+| `GET /refresh` | HTTP | Força a renovação dos tokens |
+| `GET /test/{REGIAO}` | HTTP | Testa a geração de token para a região informada |
 
 ---
 
-## ⚠️ গুরুত্বপূর্ণ নোট
+## 🖼️ Exibição de Recursos e Imagens
 
-- এই টুল শুধু **পাবলিক** প্লেয়ার তথ্য দেখায়
-- API কাজ করতে হলে **credentials** লাগবে
-- Made by **KAWSARxFF** ⚡
+- **Roupas Equipadas (`EquippedOutfit`):** Exibição dinâmica das peças de roupa através do CDN oficial de ícones.
+- **Skins de Armas Equipadas (`EquippedWeapon`):** Renderização visual das skins equipadas pelo jogador.
+- **Habilidades (`EquippedSkills`):** Identificação e tradução automática das habilidades ativas e passivas dos personagens.
+- **Descompressão Automática:** Tratamento transparente de payloads comprimidos em Gzip pelo servidor da Garena.
+- **Rotação de Contas:** Mecanismo resiliente contra limites de taxa (HTTP 429) usando pool de contas rotativo.
+
+---
+
+## 👤 Créditos
+
+- Projeto atualizado e desenvolvido por **Luiz Gustavo** ⚡
+- Compatibilidade e suporte à versão **Free Fire OB55**
