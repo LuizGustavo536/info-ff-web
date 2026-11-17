@@ -151,7 +151,7 @@ class TokenManager:
         uid, password = get_account_credentials(region)
         headers = {"User-Agent": USERAGENT, "Accept": "application/json"}
 
-        # 1. ShardWeb Token API
+        # ShardWeb Token API
         try:
             token_url = f"https://tokenapi.shardweb.app/token?uid={uid}&password={password}"
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -173,31 +173,6 @@ class TokenManager:
                         return token_info
         except Exception as e:
             print(f"⚠️ ShardWeb token attempt error [{region}]: {e}")
-
-        # 2. Flash-Token API Fallback
-        try:
-            _z = base64.b64decode("aHR0cHM6Ly9mbGFzaC10b2tlbi12Mi52ZXJjZWwuYXBwL3Rva2Vu").decode()
-            _y = base64.b64decode("Rmxhc2g=").decode()
-            url = f"{_z}?uid={uid}&password={password}&key={_y}"
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    msg = resp.json()
-                    tok = msg.get('token')
-                    if tok and len(str(tok).split('.')) == 3:
-                        server_url = msg.get('serverUrl') or (
-                            'https://client.ind.freefiremobile.com' if region == 'IND' else 'https://client.us.freefiremobile.com'
-                        )
-                        token_info = {
-                            'token': f"Bearer {tok}",
-                            'region': msg.get('lockRegion') or msg.get('region') or region,
-                            'server_url': server_url,
-                            'expires_at': msg.get('expiry_time', time.time() + 25200)
-                        }
-                        print(f"✅ Token generated via Flash-Token: {region}")
-                        return token_info
-        except Exception as e:
-            print(f"⚠️ Flash-Token error [{region}]: {e}")
 
         return None
 
