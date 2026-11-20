@@ -2,5 +2,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 token_cache.pkl
+uidpass.json
 .env
 .DS_Store

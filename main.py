@@ -55,8 +55,12 @@ CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 token_manager = None
 
-# === Pool de Contas (BR / US via uidpass.json) ===
+# === Pool de Contas (BR / US via uidpass.json com Fallback nativo) ===
 UIDPASS_PATH = os.path.join(current_dir, 'uidpass.json')
+FALLBACK_ACCOUNTS_BR = [
+    {"uid": "5437930135", "password": "BR_TG_@VISWAJEETHU_AikwF46W"},
+    {"uid": "5438234260", "password": "BR_TG_@VISWAJEETHU_AikwF46W"},
+]
 account_pool_br = []
 pool_cursor = 0
 pool_lock = threading.Lock()
@@ -64,22 +68,23 @@ pool_lock = threading.Lock()
 if os.path.exists(UIDPASS_PATH):
     try:
         with open(UIDPASS_PATH, 'r', encoding='utf-8') as f:
-            account_pool_br = json.load(f)
+            data = json.load(f)
+            if isinstance(data, list) and len(data) > 0:
+                account_pool_br = [acc for acc in data if isinstance(acc, dict) and 'uid' in acc and 'password' in acc]
     except Exception as e:
         print(f"[WARN] Erro ao carregar uidpass.json: {e}")
 
 if not account_pool_br:
-    account_pool_br = [
-        {"uid": "5437930135", "password": "BR_TG_@VISWAJEETHU_AikwF46W"},
-        {"uid": "5438234260", "password": "BR_TG_@VISWAJEETHU_AikwF46W"},
-    ]
+    print("ℹ️ Usando contas de fallback do código (uidpass.json não encontrado ou vazio)")
+    account_pool_br = list(FALLBACK_ACCOUNTS_BR)
 
 def get_next_br_account():
     global pool_cursor
     with pool_lock:
-        acc = account_pool_br[pool_cursor % len(account_pool_br)]
-        pool_cursor = (pool_cursor + 1) % len(account_pool_br)
-        return acc['uid'], acc['password']
+        pool = account_pool_br if account_pool_br else FALLBACK_ACCOUNTS_BR
+        acc = pool[pool_cursor % len(pool)]
+        pool_cursor = (pool_cursor + 1) % len(pool)
+        return acc.get('uid', '5437930135'), acc.get('password', 'BR_TG_@VISWAJEETHU_AikwF46W')
 
 def get_account_credentials(region: str) -> tuple:
     r = region.upper()
@@ -93,6 +98,95 @@ def get_account_credentials(region: str) -> tuple:
         return "4270778393", "MG24_GAMER_9NMYG_BY_SPIDEERIO_GAMING_FXK8R"
     else:
         return "4418979127", "RIZER_K4CY1_RIZER_WNX02"
+
+# === Helper Functions ===
+def pad(text: bytes) -> bytes:
+    n = AES.block_size - (len(text) % AES.block_size)
+    return text + bytes([n] * n)
+
+def aes_cbc_encrypt(key, iv, plaintext):
+    return AES.new(key, AES.MODE_CBC, iv).encrypt(pad(plaintext))
+
+def build_game_data_minimo(open_id, access_token, platform_type=4):
+    def varint(v):
+        out = bytearray()
+        while True:
+            byte = v & 0x7F
+            v >>= 7
+            out.append(byte | (0x80 if v else 0))
+            if not v:
+                return bytes(out)
+    def f_str(num, valor):
+        b = str(valor).encode('utf-8')
+        return varint((num << 3) | 2) + varint(len(b)) + b
+    return f_str(22, open_id) + f_str(29, access_token) + f_str(99, str(platform_type))
+
+async def native_major_login(uid, password, region):
+    oauth_url = "https://100067.connect.garena.com/oauth/guest/token/grant"
+    payload = {
+        'uid': uid,
+        'password': password,
+        'response_type': "token",
+        'client_type': "2",
+        'client_secret': "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
+        'client_id': "100067"
+    }
+    headers_oauth = {
+        'User-Agent': "GarenaMSDK/4.0.19P9(SM-M526B ;Android 13;pt;BR;)",
+        'Connection': "Keep-Alive",
+        'Accept-Encoding': "gzip"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            r = await client.post(oauth_url, data=payload, headers=headers_oauth)
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            open_id = data.get('open_id')
+            access_token = data.get('access_token')
+            if not open_id or not access_token:
+                return None
+            
+            login_urls = [
+                "https://loginbp.ppmainecoonghj.com/MajorLogin",
+                "https://loginbp.ggblueshark.com/MajorLogin"
+            ]
+            headers_login = {
+                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; A063 Build/TKQ1.221220.001)",
+                "Connection": "Keep-Alive",
+                "Accept-Encoding": "gzip",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Expect": "100-continue",
+                "X-Unity-Version": "2018.4.11f1",
+                "X-GA": "v1 1",
+                "X-GA-SV": "1789638359",
+                "ReleaseVersion": RELEASEVERSION
+            }
+            for url in login_urls:
+                for platform in [4, 1, 2]:
+                    edata = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, build_game_data_minimo(open_id, access_token, platform))
+                    try:
+                        resp = await client.post(url, data=edata, headers=headers_login, timeout=5.0)
+                        if resp.status_code == 200:
+                            content = resp.content
+                            offset = 64 if len(content) > 64 and content[64] == 0x08 else 0
+                            login_res = FreeFire_pb2.LoginRes()
+                            login_res.ParseFromString(content[offset:])
+                            if login_res.token:
+                                server_url = login_res.server_url or (
+                                    'https://client.ind.freefiremobile.com' if region == 'IND' else 'https://client.us.freefiremobile.com'
+                                )
+                                return {
+                                    'token': f"Bearer {login_res.token}",
+                                    'region': login_res.lock_region or region,
+                                    'server_url': server_url,
+                                    'expires_at': time.time() + 25200
+                                }
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return None
 
 # === Token Manager ===
 class TokenManager:
@@ -141,7 +235,13 @@ class TokenManager:
         uid, password = get_account_credentials(region)
         headers = {"User-Agent": USERAGENT, "Accept": "application/json"}
 
-        # ShardWeb Token API
+        # 1. Autenticação direta nativa da Garena
+        token_info = await native_major_login(uid, password, region)
+        if token_info:
+            print(f"✅ Token generated via Garena: {region}")
+            return token_info
+
+        # 2. ShardWeb Token API (fallback)
         try:
             token_url = f"https://tokenapi.shardweb.app/token?uid={uid}&password={password}"
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -176,14 +276,6 @@ class TokenManager:
             await asyncio.sleep(6 * 60 * 60)
             print("🔄 Auto-refreshing all tokens...")
             await self.refresh_all_tokens()
-
-# === Helper Functions ===
-def pad(text: bytes) -> bytes:
-    n = AES.block_size - (len(text) % AES.block_size)
-    return text + bytes([n] * n)
-
-def aes_cbc_encrypt(key, iv, plaintext):
-    return AES.new(key, AES.MODE_CBC, iv).encrypt(pad(plaintext))
 
 async def GetAccountInformation(uid, region, endpoint="/GetPlayerPersonalShow", max_retries=3):
     req = main_pb2.GetPlayerPersonalShow()

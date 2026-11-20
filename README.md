@@ -9,11 +9,12 @@ Um site moderno, rápido e completo para consulta de perfis e estatísticas de j
 ```
 Site-info/
 ├── main.py                     ← Servidor Flask principal (Python)
+├── app.py                      ← Entrypoint alternativo de execução
 ├── api/
 │   └── index.py                ← Entrada serverless para deploy na Vercel
 ├── vercel.json                 ← Configuração de rotas da Vercel
 ├── requirements.txt            ← Dependências do Python
-├── uidpass.json                ← Pool de contas para rotação e geração de tokens
+├── uidpass.json                ← (Opcional/Privado) Pool local de contas para rotação
 ├── proto/                      ← Arquivos Protobuf compilados (OB55)
 │   ├── AccountPersonalShow_pb2.py
 │   ├── main_pb2.py
